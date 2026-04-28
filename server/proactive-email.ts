@@ -12,6 +12,7 @@ import { handleUserMessage } from "./interaction-agent.js";
 import { sendImessage } from "./sendblue.js";
 import { ensureTrigger, getComposio, listConnectedToolkits } from "./composio.js";
 import { ensureWebhookSubscription } from "./composio-webhook.js";
+import { describeUserNow } from "./timezone-config.js";
 
 const TRIGGER_SLUG = "GMAIL_NEW_GMAIL_MESSAGE";
 const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
@@ -167,6 +168,7 @@ export async function classifyEmailImportance(
   const model = options.model ?? CLASSIFIER_MODEL;
   const recordUsage = options.recordUsage ?? true;
   const userIdentities = await getUserGmailIdentities();
+  const tzInfo = await describeUserNow();
 
   const prefBlock =
     preferenceLines.length > 0
@@ -176,6 +178,10 @@ export async function classifyEmailImportance(
     userIdentities.length > 0
       ? `User identities (the user's own email addresses — sender matching any of these = "self-sent"):\n${userIdentities.map((e) => `- ${e}`).join("\n")}`
       : `User identities: (none recorded)`;
+  // Anchor "now" in the user's timezone so the rubric's "expired deadlines"
+  // rule fires correctly. Without this the model uses its own training-time
+  // notion of "today" which can be way off.
+  const timeBlock = `Current local time: ${tzInfo.now} (timezone: ${tzInfo.timezone}${tzInfo.isExplicit ? "" : ", server fallback — user has not set theirs"}). Today's date in their timezone is ${tzInfo.isoDate}. Use this when judging whether a deadline has already passed.`;
 
   const userPrompt = [
     `Sender: ${email.sender || "(unknown)"}`,
@@ -190,7 +196,7 @@ export async function classifyEmailImportance(
   for await (const msg of query({
     prompt: userPrompt,
     options: {
-      systemPrompt: `${RUBRIC_PROMPT}\n\n${prefBlock}\n\n${idBlock}`,
+      systemPrompt: `${RUBRIC_PROMPT}\n\n${prefBlock}\n\n${idBlock}\n\n${timeBlock}`,
       model,
       permissionMode: "bypassPermissions",
     },
